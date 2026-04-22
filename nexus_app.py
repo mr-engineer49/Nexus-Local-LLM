@@ -35,7 +35,8 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QFont, QColor, QTextCursor, QSyntaxHighlighter, QTextCharFormat,
-    QPainter, QBrush, QPen, QFontDatabase, QPainterPath, QLinearGradient
+    QPainter, QBrush, QPen, QFontDatabase, QPainterPath, QLinearGradient,
+    QCursor
 )
 
 APP_VERSION   = "2.0"
