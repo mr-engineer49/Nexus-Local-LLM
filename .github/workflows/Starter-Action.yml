@@ -41,5 +41,6 @@ jobs:
       - name: Merge to Main
         run: |
           git checkout main
-          git merge origin/development --no-ff -m "Auto-merge from development [Nexus Pipeline]"
+          # Add the flag here to force the connection
+          git merge origin/development --allow-unrelated-histories --no-ff -m "Auto-merge from development [Nexus Pipeline]"
           git push origin main
