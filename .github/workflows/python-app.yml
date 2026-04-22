@@ -1,4 +1,4 @@
-name: Nexus Unified Pipeline
+name: Nexus Python App Package Pipeline
 
 on:
   push:
