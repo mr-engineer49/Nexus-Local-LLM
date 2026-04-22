@@ -1,0 +1,68 @@
+name: Nexus Production PYPI Publish Pipeline
+
+on:
+  push:
+    branches:
+      - development
+      - main
+  release:
+    types: [published] # This triggers the PyPI upload
+
+jobs:
+  # 1. VALIDATION
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install flake8 pytest build
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Lint
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Test
+        run: if [ -d tests ]; then pytest; fi
+
+  # 2. AUTO-MERGE (Dev to Main)
+  merge:
+    needs: validate
+    if: github.ref_name == 'development'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge
+        run: |
+          git config --global user.name "nexus-bot"
+          git config --global user.email "nexus-bot@users.noreply.github.com"
+          git checkout main
+          git merge origin/development --allow-unrelated-histories --no-ff -m "Auto-merge [Verified Build]"
+          git push origin main
+
+  # 3. BUILD AND PUBLISH (Triggers on Release)
+  pypi-release:
+    needs: validate
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Mandatory for Trusted Publishing
+      contents: read
+    environment:
+      name: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build distributions
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
