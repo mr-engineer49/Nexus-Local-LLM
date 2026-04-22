@@ -1,0 +1,46 @@
+name: Nexus Unified Pipeline
+
+on:
+  push:
+    branches:
+      - development
+      - main
+
+jobs:
+  # This job runs on EVERY push to either branch
+  system-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: System Status
+        run: |
+          echo "Nexus Architect Persona Active"
+          echo "Current Branch: ${{ github.ref_name }}"
+          python --version
+
+  # This job ONLY runs when you push to development
+  auto-merge-to-main:
+    needs: system-check
+    if: github.ref_name == 'development'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "nexus-bot"
+          git config --global user.email "nexus-bot@users.noreply.github.com"
+
+      - name: Merge to Main
+        run: |
+          git checkout main
+          # Add the flag here to force the connection
+          git merge origin/development --allow-unrelated-histories --no-ff -m "Auto-merge from development [Nexus Pipeline]"
+          git push origin main
