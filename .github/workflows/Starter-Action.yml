@@ -1,4 +1,4 @@
-name: Nexus Unified Pipeline
+name: Nexus Starter Action Pipeline
 
 on:
   push:
