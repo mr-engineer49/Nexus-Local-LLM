@@ -103,8 +103,32 @@ class TerminalPanel(QWidget):
         self.cmd_input.clear(); self._run(cmd)
 
     def _run(self, cmd):
-        cwd = self.cwd_input.text().strip() or None
+        cwd = self.cwd_input.text().strip() or str(Path.home())
         shell_type = self.shell_combo.currentData() or "cmd"
+
+        # --- Handle `cd` natively so directory changes persist ---
+        stripped = cmd.strip()
+        if stripped.lower() == "cd" or stripped.lower().startswith("cd ") or stripped.lower().startswith("cd\t"):
+            parts = stripped.split(None, 1)
+            target = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else str(Path.home())
+            # Resolve relative or absolute path
+            new_dir = Path(cwd) / target if not Path(target).is_absolute() else Path(target)
+            try:
+                resolved = new_dir.resolve()
+                if resolved.is_dir():
+                    self.cwd_input.setText(str(resolved))
+                    self.output.append_line(f"$ {cmd}", "cmd")
+                    self.output.append_line(f"→ Working directory changed to: {resolved}", "success")
+                    self.output.append_line("[exit 0]", "success")
+                else:
+                    self.output.append_line(f"$ {cmd}", "cmd")
+                    self.output.append_line(f"cd: The system cannot find the path specified: '{resolved}'", "error")
+                    self.output.append_line("[exit 1]", "error")
+            except Exception as e:
+                self.output.append_line(f"$ {cmd}", "cmd")
+                self.output.append_line(f"cd error: {e}", "error")
+                self.output.append_line("[exit 1]", "error")
+            return
         
         # Detect interactive commands that need a real TTY
         interactive_cmds = ["ollama run", "ollama launch", "python", "node", "powershell", "cmd"]

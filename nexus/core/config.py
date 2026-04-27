@@ -22,14 +22,32 @@ SESSIONS_DIR  = Path.home() / ".nexus_sessions"
 
 class AppSettings:
     _defaults: Dict[str, Any] = {
+        # Ollama
         "ollama_host":    "http://localhost:11434",
         "ollama_threads": 4,
         "gpu_layers":     0,
         "default_model":  "",
+        # GitHub / Git
         "github_token":   "",
         "clone_dir":      str(Path.home() / "Projects"),
-        "agent_approve":  False,
-        "agent_max_steps": 12,
+        # Agent
+        "agent_approve":       False,
+        "agent_max_steps":     12,
+        "agent_tool_approval": True,
+        "agent_memory_type":   "none",      # none | buffer | summary
+        # LLM Provider
+        "agent_provider":      "ollama",    # ollama | openai | anthropic | openai_compatible
+        "openai_api_key":      "",
+        "anthropic_api_key":   "",
+        "openai_base_url":     "https://api.openai.com/v1",
+        "openai_model":        "gpt-4o-mini",
+        "anthropic_model":     "claude-3-5-sonnet-20241022",
+        # LangSmith
+        "langsmith_api_key":   "",
+        "langsmith_project":   "nexus-default",
+        "langsmith_endpoint":  "https://api.smith.langchain.com",
+        "langchain_tracing":   False,
+        # App
         "autoscroll":     True,
         "timestamps":     True,
         "theme_accent":   "#6e56cf",

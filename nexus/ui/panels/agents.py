@@ -12,6 +12,8 @@ from PyQt6.QtGui import QTextCursor, QCursor
 from ...core.config import AGENTS_FILE, SESSIONS_DIR, SETTINGS
 from ...core.style import THEME, STYLESHEET
 from ...core.workers import AgentWorker, OllamaListWorker
+from ...core.langchain_agent import LangChainAgentWorker, HAS_LANGCHAIN
+import threading
 from ..widgets import LogView
 
 class AgentPanel(QWidget):
@@ -44,11 +46,14 @@ class AgentPanel(QWidget):
 
         # configuration row
         cfg = QHBoxLayout()
+        cfg.addWidget(QLabel("Provider:"))
+        self.prov_combo = QComboBox(); self.prov_combo.addItems(["ollama", "openai", "anthropic", "openai_compatible"])
+        cfg.addWidget(self.prov_combo)
         cfg.addWidget(QLabel("Model:"))
-        self.model_combo = QComboBox(); self.model_combo.setMinimumWidth(200)
+        self.model_combo = QComboBox(); self.model_combo.setMinimumWidth(150)
         cfg.addWidget(self.model_combo)
         cfg.addWidget(QLabel("Max steps:"))
-        self.steps_spin = QSpinBox(); self.steps_spin.setRange(1,30)
+        self.steps_spin = QSpinBox(); self.steps_spin.setRange(1,50)
         self.steps_spin.setValue(SETTINGS.get("agent_max_steps",12))
         cfg.addWidget(self.steps_spin)
         cfg.addStretch()
@@ -110,21 +115,36 @@ class AgentPanel(QWidget):
 
     def run_agent(self):
         task  = self.task_input.toPlainText().strip()
+        provider = self.prov_combo.currentText()
         model = self.model_combo.currentText()
         if not task:
             QMessageBox.warning(self,"No task","Enter a task first."); return
-        if not model:
-            QMessageBox.warning(self,"No model","Select or load an Ollama model."); return
+        if provider == "ollama" and not model:
+            QMessageBox.warning(self,"No model","Select an Ollama model."); return
 
         max_steps = self.steps_spin.value()
         self.step_bar.setMaximum(max_steps); self.step_bar.setValue(0)
         self.run_btn.setEnabled(False); self.status_lbl.setText("Agent running…")
         self._current_step = 0
 
-        self._worker = AgentWorker(SETTINGS.get("ollama_host"), model, task, max_steps)
+        if HAS_LANGCHAIN:
+            self._worker = LangChainAgentWorker(provider, model, task, max_steps=max_steps)
+            self._worker.approval_needed.connect(self._on_approval)
+        else:
+            self._worker = AgentWorker(SETTINGS.get("ollama_host"), model, task, max_steps)
+            
         self._worker.step.connect(self._on_step)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
+
+    def _on_approval(self, tool: str, args_str: str, event: object):
+        ans = QMessageBox.question(
+            self, "Tool Approval Needed",
+            f"The agent wants to run the following action:\n\nTool: {tool}\nArgs: {args_str}\n\nAllow this action?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        approved = (ans == QMessageBox.StandardButton.Yes)
+        self._worker.resolve_approval(approved, event)
 
     def _on_step(self, kind: str, text: str):
         self._current_step += 1
@@ -170,7 +190,10 @@ class AgentPanel(QWidget):
         self.feed.clear(); self.step_bar.setValue(0)
         self.status_lbl.setText("Ready")
 
-    def activate(self): pass
+    def activate(self):
+        """Refresh model list every time this panel becomes visible."""
+        self._load_models()
+
     def deactivate(self): pass
 
 class AgentStudioPanel(QWidget):
@@ -226,11 +249,12 @@ class AgentStudioPanel(QWidget):
         btn_preset = QPushButton("📋 Presets"); btn_preset.setFixedWidth(80)
         btn_preset.clicked.connect(self._show_presets)
         row1.addWidget(self.cfg_name,1); row1.addWidget(btn_preset); lay.addLayout(row1)
-        row2 = QHBoxLayout(); row2.addWidget(QLabel("Model:"))
-        self.cfg_model = QComboBox(); self.cfg_model.setMinimumWidth(200)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Provider:")); self.cfg_prov = QComboBox(); self.cfg_prov.addItems(["ollama", "openai", "anthropic", "openai_compatible"])
+        row2.addWidget(self.cfg_prov)
+        row2.addWidget(QLabel("Model:")); self.cfg_model = QComboBox(); self.cfg_model.setMinimumWidth(150); self.cfg_model.setEditable(True)
         row2.addWidget(self.cfg_model,1)
-        row2.addWidget(QLabel("  Max Steps:"))
-        self.cfg_steps = QSpinBox(); self.cfg_steps.setRange(1,50); self.cfg_steps.setValue(10)
+        row2.addWidget(QLabel("  Max Steps:")); self.cfg_steps = QSpinBox(); self.cfg_steps.setRange(1,50); self.cfg_steps.setValue(10)
         row2.addWidget(self.cfg_steps); lay.addLayout(row2)
         lay.addWidget(QLabel("System Prompt / Persona:"))
         self.cfg_system = QPlainTextEdit()
@@ -239,7 +263,7 @@ class AgentStudioPanel(QWidget):
             "Always write clean, typed, well-documented code.")
         lay.addWidget(self.cfg_system,1)
         lay.addWidget(QLabel("Tools (comma separated):"))
-        self.cfg_tools = QLineEdit("read_file, write_file, run_command, list_dir, git_command")
+        self.cfg_tools = QLineEdit("read_file, write_file, shell, list_dir, git, web_search, python_repl")
         lay.addWidget(self.cfg_tools)
         wdrow = QHBoxLayout(); wdrow.addWidget(QLabel("Working Dir:"))
         self.cfg_wd = QLineEdit(); self.cfg_wd.setPlaceholderText("Optional default working directory")
@@ -324,16 +348,17 @@ class AgentStudioPanel(QWidget):
             a = self._agents[idx]
             self.cfg_name.setText(a.get("name",""))
             self.cfg_system.setPlainText(a.get("system",""))
-            self.cfg_tools.setText(a.get("tools","read_file, write_file, run_command, list_dir"))
+            self.cfg_tools.setText(a.get("tools","read_file, write_file, shell, list_dir, git"))
             self.cfg_wd.setText(a.get("cwd",""))
             self.cfg_steps.setValue(a.get("max_steps",10))
+            prov = a.get("provider", "ollama")
+            self.cfg_prov.setCurrentText(prov)
             mdl = a.get("model","")
-            for i in range(self.cfg_model.count()):
-                if self.cfg_model.itemText(i)==mdl: self.cfg_model.setCurrentIndex(i); break
+            if mdl: self.cfg_model.setCurrentText(mdl)
 
     def _new_agent(self):
         self.cfg_name.setText("New Agent"); self.cfg_system.clear()
-        self.cfg_tools.setText("read_file, write_file, run_command, list_dir, git_command")
+        self.cfg_tools.setText("read_file, write_file, shell, list_dir, git")
         self.cfg_wd.clear(); self.cfg_steps.setValue(10)
 
     def _delete_agent(self):
@@ -363,7 +388,7 @@ class AgentStudioPanel(QWidget):
     def _save_agent(self):
         name = self.cfg_name.text().strip()
         if not name: QMessageBox.warning(self,"Name required","Enter agent name."); return
-        agent = {"name":name, "model":self.cfg_model.currentText(),
+        agent = {"name":name, "provider": self.cfg_prov.currentText(), "model":self.cfg_model.currentText(),
                  "system":self.cfg_system.toPlainText(), "tools":self.cfg_tools.text(),
                  "cwd":self.cfg_wd.text().strip(), "max_steps":self.cfg_steps.value()}
         for i,a in enumerate(self._agents):
@@ -379,20 +404,38 @@ class AgentStudioPanel(QWidget):
         if d: self.cfg_wd.setText(d)
 
     def _run_agent(self):
+        prov = self.cfg_prov.currentText()
         model = self.cfg_model.currentText()
         task  = self.run_task.toPlainText().strip()
-        if not task or not model:
-            QMessageBox.warning(self,"Missing","Select a model and enter a task."); return
+        if not task:
+            QMessageBox.warning(self,"Missing","Enter a task."); return
         max_steps = self.cfg_steps.value()
         self.step_bar.setMaximum(max_steps); self.step_bar.setValue(0)
         self._step_count = 0; self.run_btn.setEnabled(False); self.run_feed.clear()
-        self._worker = AgentWorker(SETTINGS.get("ollama_host"), model, task, max_steps)
+        
         custom_sys = self.cfg_system.toPlainText().strip()
-        if custom_sys:
-            self._worker._SYSTEM = custom_sys + "\n\n" + AgentWorker._SYSTEM
+        tools_list = [t.strip() for t in self.cfg_tools.text().split(",") if t.strip()]
+        cwd = self.cfg_wd.text().strip() or "."
+
+        if HAS_LANGCHAIN:
+            self._worker = LangChainAgentWorker(prov, model, task, system_prompt=custom_sys, enabled_tools=tools_list, cwd=cwd, max_steps=max_steps)
+            self._worker.approval_needed.connect(self._on_approval)
+        else:
+            self._worker = AgentWorker(SETTINGS.get("ollama_host"), model, task, max_steps)
+            if custom_sys: self._worker._SYSTEM = custom_sys + "\n\n" + AgentWorker._SYSTEM
+            
         self._worker.step.connect(self._on_step)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
+
+    def _on_approval(self, tool: str, args_str: str, event: object):
+        ans = QMessageBox.question(
+            self, "Tool Approval Needed",
+            f"The agent wants to run:\n\nTool: {tool}\nArgs: {args_str}\n\nAllow this action?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        approved = (ans == QMessageBox.StandardButton.Yes)
+        self._worker.resolve_approval(approved, event)
 
     def _on_step(self, kind, text):
         self._step_count += 1; self.step_bar.setValue(self._step_count)
@@ -444,5 +487,8 @@ class AgentStudioPanel(QWidget):
                     f"Agent: {d.get('agent','')}\nTask: {d.get('task','')}\n\nResult:\n{d.get('result','')}")
             except Exception: pass
 
-    def activate(self): pass
+    def activate(self):
+        """Refresh model list every time this panel becomes visible."""
+        self._load_ollama_models()
+
     def deactivate(self): pass

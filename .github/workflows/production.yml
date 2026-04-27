@@ -22,30 +22,29 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-xinput0 libxcb-shape0
           pip install flake8 pytest pytest-qt build
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -e .
       - name: Lint
         run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
       - name: Test
-        run: if [ -d tests ]; then PYTHONPATH=. xvfb-run pytest; fi
+        run: if [ -d tests ]; then xvfb-run pytest; fi
 
-  # 2. AUTO-MERGE (Dev to Main)
+  # 2. AUTO-PR (Dev to Main)
   merge:
     needs: validate
     if: github.ref_name == 'development'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Merge
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.name "nexus-bot"
-          git config --global user.email "nexus-bot@users.noreply.github.com"
-          git checkout main
-          git merge origin/development --allow-unrelated-histories --no-ff -m "Auto-merge [Verified Build]"
-          git push origin main
+          gh pr create --base main --head development \
+            --title "🚀 Auto-merge: development -> main [Verified Build]" \
+            --body "This PR was automatically created by the CI pipeline after successful validation on the development branch." || echo "PR already exists"
 
   # 3. BUILD AND PUBLISH (Triggers on Release)
   pypi-release:

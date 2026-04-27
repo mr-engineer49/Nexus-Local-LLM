@@ -10,7 +10,7 @@ if errorlevel 1 (
 )
 
 echo Installing dependencies...
-pip install -q PyQt6 psutil
+pip install -q -r requirements.txt
 
 echo Launching NEXUS...
 python run_nexus.py

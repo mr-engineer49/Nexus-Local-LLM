@@ -13,6 +13,7 @@ from .ui.panels.dashboard import StatusDashboard
 from .ui.panels.ollama import OllamaPanel
 from .ui.panels.git_github import GitPanel, GitHubPanel
 from .ui.panels.agents import AgentPanel, AgentStudioPanel
+from .ui.panels.langsmith_panel import LangSmithPanel
 from .ui.panels.workflow import WorkflowPanel
 from .ui.panels.terminal_system import TerminalPanel, SystemPanel
 from .ui.panels.projects import ProjectRunnerPanel
@@ -44,6 +45,7 @@ class MainWindow(QMainWindow):
             ("GitHub",    "🐙", GitHubPanel),
             ("Chat",      "💬", AgentPanel),
             ("Studio",    "🎭", AgentStudioPanel),
+            ("LangSmith", "🦜", LangSmithPanel),
             ("Projects",  "📁", ProjectRunnerPanel),
             ("Workflow",  "⛓", WorkflowPanel),
             ("Terminal",  "🐚", TerminalPanel),
