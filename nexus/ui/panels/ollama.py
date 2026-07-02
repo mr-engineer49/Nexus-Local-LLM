@@ -229,6 +229,7 @@ class OllamaPanel(QWidget):
         try:
             r = subprocess.run(["nvidia-smi","--query-gpu=name,memory.total","--format=csv,noheader"],
                 capture_output=True,text=True,timeout=4,
+                encoding="utf-8", errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
             if r.returncode==0 and r.stdout.strip():
                 self.hw_label.setText(f"🎮  GPU: {r.stdout.strip()}"); return

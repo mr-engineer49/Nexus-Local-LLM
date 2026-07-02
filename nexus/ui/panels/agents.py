@@ -47,7 +47,7 @@ class AgentPanel(QWidget):
         # configuration row
         cfg = QHBoxLayout()
         cfg.addWidget(QLabel("Provider:"))
-        self.prov_combo = QComboBox(); self.prov_combo.addItems(["ollama", "openai", "anthropic", "openai_compatible"])
+        self.prov_combo = QComboBox(); self.prov_combo.addItems(["ollama", "openai", "anthropic", "google", "groq", "together", "openai_compatible"])
         cfg.addWidget(self.prov_combo)
         cfg.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox(); self.model_combo.setMinimumWidth(150)
@@ -250,7 +250,7 @@ class AgentStudioPanel(QWidget):
         btn_preset.clicked.connect(self._show_presets)
         row1.addWidget(self.cfg_name,1); row1.addWidget(btn_preset); lay.addLayout(row1)
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Provider:")); self.cfg_prov = QComboBox(); self.cfg_prov.addItems(["ollama", "openai", "anthropic", "openai_compatible"])
+        row2.addWidget(QLabel("Provider:")); self.cfg_prov = QComboBox(); self.cfg_prov.addItems(["ollama", "openai", "anthropic", "google", "groq", "together", "openai_compatible"])
         row2.addWidget(self.cfg_prov)
         row2.addWidget(QLabel("Model:")); self.cfg_model = QComboBox(); self.cfg_model.setMinimumWidth(150); self.cfg_model.setEditable(True)
         row2.addWidget(self.cfg_model,1)
@@ -263,26 +263,47 @@ class AgentStudioPanel(QWidget):
             "Always write clean, typed, well-documented code.")
         lay.addWidget(self.cfg_system,1)
         lay.addWidget(QLabel("Tools (comma separated):"))
-        self.cfg_tools = QLineEdit("read_file, write_file, shell, list_dir, git, web_search, python_repl")
+        self.cfg_tools = QLineEdit("read_file, write_file, shell, list_dir, git, web_search, python_repl, http_request, json_transform, regex_extract, summarize_text")
         lay.addWidget(self.cfg_tools)
         wdrow = QHBoxLayout(); wdrow.addWidget(QLabel("Working Dir:"))
         self.cfg_wd = QLineEdit(); self.cfg_wd.setPlaceholderText("Optional default working directory")
         btn_wd = QPushButton("Browse"); btn_wd.clicked.connect(self._browse_wd)
         wdrow.addWidget(self.cfg_wd,1); wdrow.addWidget(btn_wd); lay.addLayout(wdrow)
+        
+        # Advanced Options
+        adv_grp = QGroupBox("Advanced Options")
+        adv_lay = QHBoxLayout(adv_grp)
+        adv_lay.addWidget(QLabel("Temperature:"))
+        from PyQt6.QtWidgets import QDoubleSpinBox, QCheckBox
+        self.cfg_temp = QDoubleSpinBox(); self.cfg_temp.setRange(0.0, 2.0); self.cfg_temp.setSingleStep(0.1); self.cfg_temp.setValue(0.7)
+        adv_lay.addWidget(self.cfg_temp)
+        self.cfg_memory = QCheckBox("Enable Conversation Memory (Buffer)")
+        adv_lay.addWidget(self.cfg_memory)
+        adv_lay.addStretch()
+        lay.addWidget(adv_grp)
+        
         btn_save = QPushButton("💾  Save Agent"); btn_save.setObjectName("primary")
         btn_save.clicked.connect(self._save_agent); lay.addWidget(btn_save)
         return w
 
     def _build_run_tab(self):
         w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(8)
-        lay.addWidget(QLabel("Task:"))
+        trow = QHBoxLayout()
+        trow.addWidget(QLabel("Task:"))
+        self.quick_prompt = QComboBox()
+        self.quick_prompt.addItems([
+            "Select quick prompt...",
+            "Analyze Python files in working dir and list potential bugs",
+            "Review git log and summarize changes from last week",
+            "Generate docstrings for all python files in this directory",
+            "Find and fix type hinting errors"
+        ])
+        self.quick_prompt.currentIndexChanged.connect(self._on_quick_prompt)
+        trow.addStretch(); trow.addWidget(self.quick_prompt)
+        lay.addLayout(trow)
+        
         self.run_task = QPlainTextEdit()
-        self.run_task.setPlaceholderText(
-            "Describe the task for this agent...\n"
-            "Examples:\n"
-            "• Analyze Python files in working dir and list potential bugs\n"
-            "• Create a Flask REST API with JWT authentication\n"
-            "• Review git log and summarize changes from last week")
+        self.run_task.setPlaceholderText("Describe the task for this agent...")
         self.run_task.setMaximumHeight(100)
         lay.addWidget(self.run_task)
         ctrl = QHBoxLayout()
@@ -300,6 +321,11 @@ class AgentStudioPanel(QWidget):
         self.run_feed.setStyleSheet(f"background:#08080e;color:{THEME['text']};font-size:12px;border-radius:4px;")
         lay.addWidget(self.run_feed,1)
         return w
+
+    def _on_quick_prompt(self, index):
+        if index > 0:
+            self.run_task.setPlainText(self.quick_prompt.currentText())
+            self.quick_prompt.setCurrentIndex(0)
 
     def _build_history_tab(self):
         w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(8)
@@ -470,12 +496,8 @@ class AgentStudioPanel(QWidget):
         if SESSIONS_DIR.exists():
             files = sorted(SESSIONS_DIR.glob("studio_*.json"), reverse=True)[:25]
             for f in files:
-                try:
-                    d = json.loads(f.read_text())
-                    self.history_list.addItem(
-                        f"[{d.get('timestamp','')[:16]}] {d.get('agent','')} — {d.get('task','')[:45]}")
-                    self._session_files.append(f)
-                except Exception: pass
+                self.history_list.addItem(f.stem)
+                self._session_files.append(f)
 
     def _on_history_select(self, cur, _):
         if not cur: return

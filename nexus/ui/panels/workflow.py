@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsPathItem,
     QGraphicsEllipseItem, QGraphicsTextItem, QGraphicsLineItem,
-    QSplitter, QMenu, QInputDialog, QFileDialog
+    QSplitter, QMenu, QInputDialog, QFileDialog, QDialog, QFormLayout, QTextEdit, QLineEdit, QComboBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox
 )
 from PyQt6.QtCore import Qt, QPointF, QRectF, QLineF, QEvent
 from PyQt6.QtGui import QColor, QBrush, QPen, QFont, QPainter, QPainterPath, QCursor
@@ -23,6 +24,7 @@ class FlowNode(QGraphicsRectItem):
         "ai":       {"color":"#1e1040","border":"#6e56cf","emoji":"🤖","label":"AI Task"},
         "git":      {"color":"#0e2a1e","border":"#3ecf8e","emoji":"📁","label":"Git"},
         "terminal": {"color":"#2a1e0a","border":"#f7b731","emoji":"💻","label":"Terminal"},
+        "python":   {"color":"#102a10","border":"#31f755","emoji":"🐍","label":"Python"},
         "condition":{"color":"#2a0e0e","border":"#f04452","emoji":"🔀","label":"Condition"},
         "notify":   {"color":"#0e0e2a","border":"#9d7ff5","emoji":"🔔","label":"Notify"},
     }
@@ -83,9 +85,11 @@ class FlowNode(QGraphicsRectItem):
                 if hasattr(e, "update_path"): e.update_path()
         return super().itemChange(change, value)
 
-    def set_highlight(self, active: bool):
+    def set_highlight(self, active: bool, paused: bool = False):
         pen = self.pen()
-        if active:
+        if paused:
+            pen.setWidth(3); pen.setColor(QColor("#f1c40f")) # Yellow for paused debugging
+        elif active:
             pen.setWidth(3); pen.setColor(QColor(THEME["accent2"]))
         else:
             info = self.TYPES.get(self.node_type, self.TYPES["terminal"])
@@ -208,20 +212,10 @@ class NodeCanvas(QGraphicsScene):
             self._nodes.remove(node); self.removeItem(node)
 
     def _configure_node(self, node: FlowNode):
-        ntype = node.node_type
-        fields = {
-            "trigger":  [("type","manual|interval|file"),("interval_sec","30"),("watch_path","")],
-            "ai":       [("model",""), ("prompt","")],
-            "git":      [("cmd","git pull"), ("repo","")],
-            "terminal": [("cmd",""), ("cwd","")],
-            "condition":[("pattern",""), ("on_true","continue"),("on_false","stop")],
-            "notify":   [("message",""), ("level","info")],
-        }
-        for key, default in fields.get(ntype, []):
-            cur = node.config.get(key, default)
-            val, ok = QInputDialog.getText(None, f"Configure {ntype}", f"{key}:", text=cur)
-            if ok: node.config[key] = val
-        node.update_config_display()
+        dialog = NodeConfigDialog(node)
+        if dialog.exec():
+            node.config = dialog.get_config()
+            node.update_config_display()
 
     def delete_selected(self):
         for item in self.selectedItems():
@@ -249,6 +243,89 @@ class NodeCanvas(QGraphicsScene):
             src = self._nodes[ed["from"]]; dst = self._nodes[ed["to"]]
             self.connect_nodes(src, dst)
 
+class NodeConfigDialog(QDialog):
+    def __init__(self, node: FlowNode, parent=None):
+        super().__init__(parent)
+        self.node = node
+        self.setWindowTitle(f"Configure {node.node_type.capitalize()} Node")
+        self.setMinimumWidth(400)
+        self.setStyleSheet(STYLESHEET)
+        
+        self.fields = {}
+        self._build_ui()
+        
+    def _build_ui(self):
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        
+        # Define fields and types for each node
+        schemas = {
+            "trigger":  [("type", "combo", ["manual", "interval", "file"]), ("interval_sec", "line", "30"), ("watch_path", "line", "")],
+            "ai":       [("model", "line", ""), ("prompt", "text", "")],
+            "git":      [("cmd", "line", "git pull"), ("repo", "line", ".")],
+            "terminal": [("cmd", "text", ""), ("cwd", "line", "."), ("timeout", "line", "60")],
+            "python":   [("script", "text", "print('Hello World')")],
+            "condition":[("pattern", "line", ""), ("on_true", "combo", ["continue", "stop"]), ("on_false", "combo", ["stop", "continue"])],
+            "notify":   [("message", "line", ""), ("level", "combo", ["info", "success", "warn", "error"])],
+        }
+        
+        schema = schemas.get(self.node.node_type, [])
+        for key, ftype, default in schema:
+            cur_val = self.node.config.get(key, default)
+            if ftype == "line":
+                w = QLineEdit(str(cur_val))
+            elif ftype == "text":
+                w = QTextEdit()
+                w.setPlainText(str(cur_val))
+                w.setMinimumHeight(100)
+            elif ftype == "combo":
+                w = QComboBox()
+                w.addItems(default)
+                if cur_val in default: w.setCurrentText(cur_val)
+                elif cur_val: w.addItem(str(cur_val)); w.setCurrentText(str(cur_val))
+            
+            self.fields[key] = (w, ftype)
+            form.addRow(f"{key}:", w)
+            
+            # Special button for AI prompts
+            if self.node.node_type == "ai" and key == "prompt":
+                btn_load = QPushButton("Load Template")
+                btn_load.clicked.connect(lambda _, w=w: self._load_prompt_template(w))
+                form.addRow("", btn_load)
+                
+        lay.addLayout(form)
+        
+        btn_box = QHBoxLayout()
+        btn_box.addStretch()
+        btn_ok = QPushButton("Save"); btn_ok.clicked.connect(self.accept); btn_ok.setObjectName("primary")
+        btn_cancel = QPushButton("Cancel"); btn_cancel.clicked.connect(self.reject)
+        btn_box.addWidget(btn_cancel); btn_box.addWidget(btn_ok)
+        lay.addLayout(btn_box)
+
+    def _load_prompt_template(self, text_edit):
+        try:
+            import json
+            from pathlib import Path
+            prompts_file = Path.home() / ".nexus_prompts.json"
+            if prompts_file.exists():
+                prompts = json.loads(prompts_file.read_text())
+                names = [p["name"] for p in prompts]
+                if not names: return
+                val, ok = QInputDialog.getItem(self, "Select Prompt", "Template:", names, 0, False)
+                if ok and val:
+                    tpl = next(p for p in prompts if p["name"] == val)
+                    text_edit.setPlainText(tpl.get("template", ""))
+        except Exception as e:
+            pass
+            
+    def get_config(self):
+        cfg = {}
+        for k, (w, ftype) in self.fields.items():
+            if ftype == "line": cfg[k] = w.text()
+            elif ftype == "text": cfg[k] = w.toPlainText()
+            elif ftype == "combo": cfg[k] = w.currentText()
+        return cfg
+
 class WorkflowPanel(QWidget):
     def __init__(self):
         super().__init__()
@@ -270,7 +347,7 @@ class WorkflowPanel(QWidget):
         root.addWidget(desc)
 
         tb = QHBoxLayout()
-        node_types = [("🔵 Trigger","trigger"),("🤖 AI","ai"),("📁 Git","git"),
+        node_types = [("🔵 Trigger","trigger"),("🤖 AI","ai"),("🐍 Python","python"),("📁 Git","git"),
                       ("💻 Terminal","terminal"),("🔀 Condition","condition"),("🔔 Notify","notify")]
         for label, nt in node_types:
             b = QPushButton(label); b.setMaximumHeight(28)
@@ -278,14 +355,24 @@ class WorkflowPanel(QWidget):
             b.clicked.connect(lambda _, t=nt: self._add_node(t))
             tb.addWidget(b)
         tb.addStretch()
+        
+        self.debug_mode_chk = QCheckBox("⏸ Debug Mode")
+        self.debug_mode_chk.setStyleSheet(f"color:{THEME['text']}; font-size:11px; margin-right: 8px;")
+        tb.addWidget(self.debug_mode_chk)
+        
+        self.btn_step = QPushButton("⏭ Step Next")
+        self.btn_step.setEnabled(False)
+        self.btn_step.clicked.connect(self._step_flow)
+        tb.addWidget(self.btn_step)
+
         btn_del = QPushButton("🗑 Delete"); btn_del.setObjectName("danger")
         btn_del.clicked.connect(lambda: self.canvas.delete_selected())
         btn_clear = QPushButton("Clear All"); btn_clear.clicked.connect(self._clear_all)
         btn_save  = QPushButton("💾 Save"); btn_save.clicked.connect(self._save_flow)
         btn_load  = QPushButton("📂 Load"); btn_load.clicked.connect(self._load_flow)
-        btn_run   = QPushButton("▶ Run Flow"); btn_run.setObjectName("success")
-        btn_run.clicked.connect(self._run_flow)
-        for b in [btn_del, btn_clear, btn_save, btn_load, btn_run]:
+        self.btn_run = QPushButton("▶ Run Flow"); self.btn_run.setObjectName("success")
+        self.btn_run.clicked.connect(self._run_flow)
+        for b in [btn_del, btn_clear, btn_save, btn_load, self.btn_run]:
             tb.addWidget(b)
         root.addLayout(tb)
 
@@ -309,8 +396,21 @@ class WorkflowPanel(QWidget):
         self.view.setMinimumHeight(300)
         split.addWidget(self.view)
 
-        self.log = LogView(); self.log.setMaximumHeight(160)
-        split.addWidget(self.log); split.setSizes([400, 160])
+        # Bottom Splitter: Logs (left) & Context Variables (right)
+        split_bottom = QSplitter(Qt.Orientation.Horizontal)
+        self.log = LogView()
+        split_bottom.addWidget(self.log)
+        
+        self.context_table = QTableWidget(0, 2)
+        self.context_table.setHorizontalHeaderLabels(["Variable Name", "Value"])
+        self.context_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.context_table.setStyleSheet(f"background: {THEME['bg2']}; color: {THEME['text']}; border: 1px solid {THEME['border']}; border-radius: 4px;")
+        self.context_table.itemChanged.connect(self._on_context_cell_changed)
+        split_bottom.addWidget(self.context_table)
+        split_bottom.setSizes([450, 250])
+        
+        split_bottom.setMaximumHeight(180)
+        split.addWidget(split_bottom); split.setSizes([400, 180])
         root.addWidget(split, 1)
 
     def _add_node(self, node_type):
@@ -336,15 +436,72 @@ class WorkflowPanel(QWidget):
     def _run_flow(self):
         data = self.canvas.to_dict()
         if not data["nodes"]: return
-        self._worker = WorkflowWorker(data, host=SETTINGS.get("ollama_host"))
+        self.context_table.setRowCount(0)
+        self.btn_run.setEnabled(False)
+        
+        step_mode = self.debug_mode_chk.isChecked()
+        self._worker = WorkflowWorker(data, host=SETTINGS.get("ollama_host"), step_mode=step_mode)
         self._worker.step_info.connect(self.log.append_line)
         self._worker.highlight.connect(self._highlight_node)
-        self._worker.finished.connect(lambda: self.log.append_line("Workflow complete","success"))
+        self._worker.paused.connect(self._on_flow_paused)
+        self._worker.context_updated.connect(self._on_context_updated)
+        
+        def on_finished():
+            self.log.append_line("Workflow complete", "success")
+            self.btn_run.setEnabled(True)
+            self.btn_step.setEnabled(False)
+            self._clear_all_paused_highlights()
+            
+        self._worker.finished.connect(on_finished)
         self._worker.start()
 
     def _highlight_node(self, idx, active):
         if 0 <= idx < len(self.canvas._nodes):
             self.canvas._nodes[idx].set_highlight(active)
+
+    def _on_flow_paused(self, node_idx):
+        self.log.append_line(f"Paused. Click 'Step Next' to run this node.", "warn")
+        if 0 <= node_idx < len(self.canvas._nodes):
+            self.canvas._nodes[node_idx].set_highlight(False, paused=True)
+        self.btn_step.setEnabled(True)
+
+    def _step_flow(self):
+        self.btn_step.setEnabled(False)
+        self._clear_all_paused_highlights()
+        if self._worker:
+            self._worker.step()
+
+    def _clear_all_paused_highlights(self):
+        for node in self.canvas._nodes:
+            # Revert yellow border to default
+            node.set_highlight(False, paused=False)
+
+    def _on_context_updated(self, context_dict):
+        self.context_table.blockSignals(True)
+        self.context_table.setRowCount(0)
+        for k, v in context_dict.items():
+            row = self.context_table.rowCount()
+            self.context_table.insertRow(row)
+            
+            key_item = QTableWidgetItem(str(k))
+            key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable) # Read-only key
+            self.context_table.setItem(row, 0, key_item)
+            
+            val_item = QTableWidgetItem(str(v))
+            self.context_table.setItem(row, 1, val_item)
+        self.context_table.blockSignals(False)
+
+    def _on_context_cell_changed(self, item):
+        if not hasattr(self, "_worker") or not self._worker or not self._worker.isRunning():
+            return
+        row = item.row()
+        key_item = self.context_table.item(row, 0)
+        val_item = self.context_table.item(row, 1)
+        if key_item and val_item:
+            key = key_item.text()
+            val = val_item.text()
+            self._worker.engine.context[key] = val
+            self.log.append_line(f"Runtime variable '{key}' modified to: '{val}'", "info")
 
     def _load_template(self, tpl):
         templates = {

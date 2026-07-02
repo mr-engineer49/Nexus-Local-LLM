@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QFrame, QSplitter, QTreeWidget, QTreeWidgetItem
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from ...core.config import SETTINGS, SESSIONS_DIR, PROJECTS_FILE, HAS_PSUTIL
 from ...core.style import THEME
 from ...core.workers import CommandWorker
@@ -12,6 +12,40 @@ from ..widgets import LogView
 
 if HAS_PSUTIL:
     import psutil
+
+class GitStatusWorker(QThread):
+    output_line = pyqtSignal(str)
+    def __init__(self, projects):
+        super().__init__()
+        self.projects = projects
+    def run(self):
+        for p in self.projects[:6]:
+            try:
+                import subprocess, sys
+                r = subprocess.run("git status --short --branch", cwd=p["path"], shell=True,
+                    capture_output=True, text=True, timeout=5,
+                    encoding="utf-8", errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
+                out = (r.stdout + r.stderr).strip()[:70]
+                self.output_line.emit(f"{p['name']}: {out}")
+            except Exception as e:
+                self.output_line.emit(f"{p['name']}: [error] {e}")
+
+class SessionListWorker(QThread):
+    output_line = pyqtSignal(str)
+    def __init__(self, session_dir):
+        super().__init__()
+        self.session_dir = session_dir
+    def run(self):
+        import json
+        if self.session_dir.exists():
+            files = sorted(self.session_dir.glob("*.json"), reverse=True)[:10]
+            for f in files:
+                try:
+                    d = json.loads(f.read_text())
+                    self.output_line.emit(f"[{d.get('timestamp','')[:16]}] {d.get('agent','?')} — {d.get('result','')[:50]}")
+                except Exception:
+                    pass
 
 class StatusDashboard(QWidget):
     """Live overview: Ollama status, active models, agent sessions, system resources."""
@@ -139,22 +173,17 @@ class StatusDashboard(QWidget):
             else:
                 self._last_sess_count = len(files)
                 self.sess_lbl.setText(f"{len(files)} session(s)")
-                if files:
-                    try:
-                        d = json.loads(files[0].read_text())
-                        self.sess_latest.setText(f"Latest: {d.get('timestamp','')[:16]} — {d.get('agent','')}")
-                    except Exception: pass
+                
                 self.sessions_tree.clear()
-                for f in files[:20]:
-                    try:
-                        d = json.loads(f.read_text())
-                        self.sessions_tree.addTopLevelItem(QTreeWidgetItem([
-                            d.get("timestamp","")[:16],
-                            d.get("agent","") or d.get("model",""),
-                            d.get("task","")[:55],
-                            d.get("result","")[:45],
-                        ]))
-                    except Exception: pass
+                for f in files[:10]:
+                    # Prevent heavy JSON parsing on UI thread; just use basic metadata
+                    size_kb = f.stat().st_size // 1024
+                    self.sessions_tree.addTopLevelItem(QTreeWidgetItem([
+                        f.stem[-15:] if "_" in f.stem else f.stem,
+                        "Agent Session",
+                        f"Size: {size_kb} KB",
+                        "View in Agents Tab"
+                    ]))
 
         if HAS_PSUTIL:
             cpu = psutil.cpu_percent(interval=None)
@@ -176,7 +205,7 @@ class StatusDashboard(QWidget):
     def _quick_action(self, action):
         if action == "__sys_snap__":
             if HAS_PSUTIL:
-                cpu  = psutil.cpu_percent(interval=1)
+                cpu  = psutil.cpu_percent(interval=None) # Non-blocking!
                 vm   = psutil.virtual_memory()
                 disk = psutil.disk_usage("/" if sys.platform!="win32" else "C:\\")
                 self.quick_log.append_line(
@@ -188,23 +217,19 @@ class StatusDashboard(QWidget):
                     with open(PROJECTS_FILE) as f: projs = json.load(f)
                 else: projs = []
             except Exception: projs = []
-            for p in projs[:6]:
-                try:
-                    r = subprocess.run("git status --short --branch", cwd=p["path"], shell=True,
-                        capture_output=True, text=True, timeout=5,
-                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
-                    self.quick_log.append_line(f"{p['name']}: {(r.stdout+r.stderr).strip()[:70]}","info")
-                except Exception: pass
+            if not projs:
+                self.quick_log.append_line("No projects found", "warn")
+                return
+            self.quick_log.append_line("Checking status of all projects in background...", "info")
+            self._git_worker = GitStatusWorker(projs)
+            self._git_worker.output_line.connect(lambda l: self.quick_log.append_line(l, "info"))
+            self._git_worker.start()
             return
         if action == "__list_sessions__":
-            if SESSIONS_DIR.exists():
-                files = sorted(SESSIONS_DIR.glob("*.json"),reverse=True)[:10]
-                for f in files:
-                    try:
-                        d = json.loads(f.read_text())
-                        self.quick_log.append_line(
-                            f"[{d.get('timestamp','')[:16]}] {d.get('agent','?')} — {d.get('result','')[:50]}","info")
-                    except Exception: pass
+            self.quick_log.append_line("Loading sessions in background...", "info")
+            self._sess_worker = SessionListWorker(SESSIONS_DIR)
+            self._sess_worker.output_line.connect(lambda l: self.quick_log.append_line(l, "info"))
+            self._sess_worker.start()
             return
         w = CommandWorker(action, shell_type="cmd")
         w.output.connect(lambda l: self.quick_log.append_line(l))

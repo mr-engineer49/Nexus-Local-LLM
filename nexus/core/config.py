@@ -47,6 +47,22 @@ class AppSettings:
         "langsmith_project":   "nexus-default",
         "langsmith_endpoint":  "https://api.smith.langchain.com",
         "langchain_tracing":   False,
+        # Google AI (Gemini)
+        "google_api_key":      "",
+        "google_model":        "gemini-2.0-flash",
+        # Groq
+        "groq_api_key":        "",
+        "groq_model":          "llama-3.3-70b-versatile",
+        # Together AI
+        "together_api_key":    "",
+        "together_model":      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        # HuggingFace
+        "huggingface_api_key": "",
+        # RAG Settings
+        "rag_embedding_provider": "ollama",
+        "rag_embedding_model":    "nomic-embed-text",
+        "rag_chunk_size":         1000,
+        "rag_chunk_overlap":      200,
         # App
         "autoscroll":     True,
         "timestamps":     True,

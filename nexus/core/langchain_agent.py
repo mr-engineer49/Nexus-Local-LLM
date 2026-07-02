@@ -75,6 +75,28 @@ def build_llm(provider: str, model: str = "", host: str = "", api_key: str = "",
             base_url=host or SETTINGS.get("openai_base_url"),
             temperature=temperature,
         )
+    elif provider == "google":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=model or SETTINGS.get("google_model", "gemini-2.0-flash"),
+            google_api_key=api_key or SETTINGS.get("google_api_key", ""),
+            temperature=temperature,
+        )
+    elif provider == "groq":
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model=model or SETTINGS.get("groq_model", "llama-3.3-70b-versatile"),
+            api_key=api_key or SETTINGS.get("groq_api_key", ""),
+            temperature=temperature,
+        )
+    elif provider == "together":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model or SETTINGS.get("together_model", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+            api_key=api_key or SETTINGS.get("together_api_key", ""),
+            base_url="https://api.together.xyz/v1",
+            temperature=temperature,
+        )
     else:
         raise ValueError(f"Unknown LLM provider: {provider!r}")
 
@@ -84,7 +106,8 @@ def build_llm(provider: str, model: str = "", host: str = "", api_key: str = "",
 ALL_TOOLS = [
     "shell", "read_file", "write_file", "list_dir",
     "git", "python_repl", "web_search",
-    "langsmith_runs", "langsmith_datasets",
+    "langsmith_runs", "langsmith_datasets", "code_search",
+    "http_request", "json_transform", "regex_extract", "summarize_text",
 ]
 
 def build_tools(
@@ -112,7 +135,8 @@ def build_tools(
             try:
                 r = subprocess.run(
                     command, cwd=cwd, shell=True,
-                    capture_output=True, text=True, timeout=60, creationflags=_flags,
+                    capture_output=True, text=True, timeout=60,
+                    encoding="utf-8", errors="replace", creationflags=_flags,
                 )
                 return (r.stdout + r.stderr).strip()[:4000] or f"[exit {r.returncode}]"
             except subprocess.TimeoutExpired:
@@ -171,7 +195,8 @@ def build_tools(
             try:
                 r = subprocess.run(
                     f"git {command}", cwd=repo_path, shell=True,
-                    capture_output=True, text=True, timeout=30, creationflags=_flags,
+                    capture_output=True, text=True, timeout=30,
+                    encoding="utf-8", errors="replace", creationflags=_flags,
                 )
                 return (r.stdout + r.stderr).strip()[:3000] or f"[exit {r.returncode}]"
             except Exception as e:
@@ -247,6 +272,138 @@ def build_tools(
                 return f"[ERROR] {e}"
         tools.append(langsmith_datasets)
 
+    # ── code_search ───────────────────────────────────────────────────────────
+    if "code_search" in enabled:
+        @lc_tool
+        def code_search(query: str) -> str:
+            """Semantic search the codebase for the given query to find relevant file snippets and functions."""
+            try:
+                from .rag import CodebaseRAG
+                rag = CodebaseRAG(cwd)
+                provider = SETTINGS.get("rag_embedding_provider", "ollama")
+                model = SETTINGS.get("rag_embedding_model", "nomic-embed-text")
+                host = SETTINGS.get("ollama_host", "http://localhost:11434")
+                api_key = ""
+                if provider == "openai":
+                    api_key = SETTINGS.get("openai_api_key", "")
+                elif provider == "openai_compatible":
+                    api_key = "not-needed"
+                    
+                results = rag.search(query, top_k=5, provider=provider, model=model, host=host, api_key=api_key)
+                if not results:
+                    return f"No matching code snippets found for query: '{query}'"
+                
+                output = []
+                for idx, r in enumerate(results):
+                    output.append(
+                        f"Result {idx+1}:\n"
+                        f"File: {r['file']} (Lines {r['start_line']}-{r['end_line']})\n"
+                        f"Relevance Score: {r['score']:.2f}\n"
+                        f"Code:\n```\n{r['text']}\n```\n"
+                    )
+                return "\n\n".join(output)
+            except Exception as e:
+                return f"[ERROR] Code search failed: {e}"
+        tools.append(code_search)
+
+    # ── http_request ──────────────────────────────────────────────────────────
+    if "http_request" in enabled:
+        @lc_tool
+        def http_request(url: str, method: str = "GET", body: str = "", headers_json: str = "{}") -> str:
+            """Make an HTTP request to any URL. method: GET or POST. headers_json: JSON string of headers. body: request body for POST."""
+            if not _approve("http_request", f"{method} {url}"):
+                return "[DENIED] HTTP request rejected by user."
+            import requests as _req
+            try:
+                hdrs = json.loads(headers_json) if headers_json else {}
+                if method.upper() == "POST":
+                    r = _req.post(url, data=body, headers=hdrs, timeout=30)
+                else:
+                    r = _req.get(url, headers=hdrs, timeout=30)
+                return f"[{r.status_code}]\n{r.text[:4000]}"
+            except Exception as e:
+                return f"[ERROR] {e}"
+        tools.append(http_request)
+
+    # ── json_transform ────────────────────────────────────────────────────────
+    if "json_transform" in enabled:
+        @lc_tool
+        def json_transform(json_str: str, path: str = "") -> str:
+            """Parse a JSON string and extract data at a dot-separated path (e.g. 'data.items.0.name'). Empty path returns the whole parsed structure."""
+            try:
+                data = json.loads(json_str)
+                if path:
+                    for key in path.split("."):
+                        if isinstance(data, list):
+                            data = data[int(key)]
+                        elif isinstance(data, dict):
+                            data = data[key]
+                        else:
+                            return f"[ERROR] Cannot traverse into {type(data).__name__} with key '{key}'"
+                return json.dumps(data, indent=2)[:4000]
+            except Exception as e:
+                return f"[ERROR] {e}"
+        tools.append(json_transform)
+
+    # ── regex_extract ─────────────────────────────────────────────────────────
+    if "regex_extract" in enabled:
+        @lc_tool
+        def regex_extract(text: str, pattern: str) -> str:
+            """Extract all matches of a regex pattern from text. Returns one match per line. Groups are pipe-separated."""
+            import re
+            try:
+                matches = re.findall(pattern, text)
+                if not matches:
+                    return "No matches found."
+                lines = []
+                for m in matches[:50]:
+                    if isinstance(m, tuple):
+                        lines.append(" | ".join(m))
+                    else:
+                        lines.append(str(m))
+                return "\n".join(lines)
+            except Exception as e:
+                return f"[ERROR] {e}"
+        tools.append(regex_extract)
+
+    # ── summarize_text ────────────────────────────────────────────────────────
+    if "summarize_text" in enabled:
+        @lc_tool
+        def summarize_text(text: str, max_words: int = 150) -> str:
+            """Summarize a long text into a concise version. Uses the active LLM."""
+            try:
+                from .config import SETTINGS
+                provider = SETTINGS.get("agent_provider", "ollama")
+                model = SETTINGS.get(f"{provider}_model") or SETTINGS.get("default_model") or "llama3"
+                
+                llm = build_llm(provider, model)
+                from langchain_core.messages import SystemMessage, HumanMessage
+                messages = [
+                    SystemMessage(content=f"Summarize the following text concisely in under {max_words} words."),
+                    HumanMessage(content=text[:8000])
+                ]
+                ans = llm.invoke(messages).content
+                return ans
+            except Exception as e:
+                try:
+                    import requests as _req
+                    host_url = SETTINGS.get("ollama_host", "http://localhost:11434")
+                    model_name = SETTINGS.get("default_model", "llama3")
+                    body = {
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": f"Summarize the following text concisely in under {max_words} words."},
+                            {"role": "user", "content": text[:8000]}
+                        ],
+                        "stream": False
+                    }
+                    r = _req.post(f"{host_url}/api/chat", json=body, timeout=60)
+                    r.raise_for_status()
+                    return r.json().get("message", {}).get("content", "[No response]")
+                except Exception:
+                    return f"[ERROR] {e}"
+        tools.append(summarize_text)
+
     return tools
 
 
@@ -302,7 +459,7 @@ class LangChainAgentWorker(QThread):
         self.model            = model
         self.task             = task
         self.system_prompt    = system_prompt
-        self.enabled_tools    = enabled_tools or ["shell", "read_file", "write_file", "list_dir", "git"]
+        self.enabled_tools    = enabled_tools or ["shell", "read_file", "write_file", "list_dir", "git", "code_search"]
         self.cwd              = cwd
         self.max_steps        = max_steps
         self.host             = host

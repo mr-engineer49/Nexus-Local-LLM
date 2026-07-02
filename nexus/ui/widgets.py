@@ -16,7 +16,7 @@ class NavButton(QPushButton):
         self.setObjectName("nav_btn")
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(42)
+        self.setFixedHeight(36)
 
     def set_active(self, active):
         self.setObjectName("nav_btn_active" if active else "nav_btn")
@@ -31,9 +31,9 @@ class LogView(QTextEdit):
         self.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.document().setMaximumBlockCount(2000)
         self._colors = {
-            "info":"#b0ffb0","warn":"#f7b731","error":"#f04452",
-            "cmd":"#6e9fff","system":"#8888aa","success":"#3ecf8e",
-            "token":"#d0d0ff",
+            "info":"#a7f3d0","warn":"#fcd34d","error":"#fca5a5",
+            "cmd":"#93c5fd","system":"#6b7280","success":"#6ee7b7",
+            "token":"#c7d2fe",
         }
         self._ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
@@ -41,7 +41,7 @@ class LogView(QTextEdit):
         text = self._ansi_escape.sub('', text)
         color = self._colors.get(level, self._colors["info"])
         ts    = datetime.now().strftime("%H:%M:%S")
-        html  = (f'<span style="color:#444466;">[{ts}]</span> '
+        html  = (f'<span style="color:#4b5563;">[{ts}]</span> '
                  f'<span style="color:{color};">{self._esc(text)}</span>')
         self.append(html)
         self.moveCursor(QTextCursor.MoveOperation.End)
@@ -53,7 +53,7 @@ class LogView(QTextEdit):
         
         # Use insertText with formatting to perfectly preserve whitespace (HTML strips spaces)
         fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#d0d0ff"))
+        fmt.setForeground(QColor("#c7d2fe"))
         cur.setCharFormat(fmt)
         cur.insertText(tok)
         
@@ -69,15 +69,15 @@ class DiffHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text):
         fmt = QTextCharFormat()
         if text.startswith("+++") or text.startswith("---"):
-            fmt.setForeground(QColor("#9d7ff5")); fmt.setFontWeight(700)
+            fmt.setForeground(QColor("#818cf8")); fmt.setFontWeight(700)
         elif text.startswith("+"):
-            fmt.setForeground(QColor("#3ecf8e"))
+            fmt.setForeground(QColor("#6ee7b7"))
         elif text.startswith("-"):
-            fmt.setForeground(QColor("#f04452"))
+            fmt.setForeground(QColor("#fca5a5"))
         elif text.startswith("@@"):
-            fmt.setForeground(QColor("#f7b731"))
+            fmt.setForeground(QColor("#fcd34d"))
         elif text.startswith("diff ") or text.startswith("index "):
-            fmt.setForeground(QColor("#8888aa"))
+            fmt.setForeground(QColor("#6b7280"))
         else:
             fmt.setForeground(QColor(THEME["text3"]))
         self.setFormat(0, len(text), fmt)

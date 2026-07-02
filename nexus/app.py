@@ -17,6 +17,9 @@ from .ui.panels.langsmith_panel import LangSmithPanel
 from .ui.panels.workflow import WorkflowPanel
 from .ui.panels.terminal_system import TerminalPanel, SystemPanel
 from .ui.panels.projects import ProjectRunnerPanel
+from .ui.panels.rag_panel import RAGPanel
+from .ui.panels.integrations_panel import IntegrationsPanel
+from .ui.panels.prompts_panel import PromptsPanel
 from .ui.panels.settings import SettingsPanel
 
 
@@ -46,7 +49,10 @@ class MainWindow(QMainWindow):
             ("Chat",      "💬", AgentPanel),
             ("Studio",    "🎭", AgentStudioPanel),
             ("LangSmith", "🦜", LangSmithPanel),
+            ("Integrations","🔌", IntegrationsPanel),
             ("Projects",  "📁", ProjectRunnerPanel),
+            ("RAG Search", "🔍", RAGPanel),
+            ("Prompts",   "📝", PromptsPanel),
             ("Workflow",  "⛓", WorkflowPanel),
             ("Terminal",  "🐚", TerminalPanel),
             ("System",    "📊", SystemPanel),

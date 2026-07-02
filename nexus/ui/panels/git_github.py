@@ -6,13 +6,85 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QInputDialog, QMessageBox, QFileDialog,
     QTreeWidget, QTreeWidgetItem, QGroupBox, QApplication, QLineEdit
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
-
+import requests
 from ...core.config import PROJECTS_FILE, SETTINGS
 from ...core.style import THEME, STYLESHEET
 from ...core.workers import CommandWorker, GitHubWorker
 from ..widgets import LogView, DiffHighlighter
+
+class CommitMessageWorker(QThread):
+    result = pyqtSignal(str)
+    error = pyqtSignal(str)
+    
+    def __init__(self, diff_text, provider, model, host, api_key):
+        super().__init__()
+        self.diff_text = diff_text
+        self.provider = provider
+        self.model = model
+        self.host = host
+        self.api_key = api_key
+        
+    def run(self):
+        try:
+            prompt = (
+                "You are an expert developer. Generate a professional, concise, one-line git commit message "
+                "in the Conventional Commits format (e.g. 'feat: add RAG indexing' or 'fix: resolve file path parsing') "
+                "based on the following git diff. Return ONLY the message. Do not include markdown, markdown codeblocks, "
+                "or explanations.\n\n"
+                f"Diff:\n{self.diff_text[:5000]}"
+            )
+            
+            if self.provider == "ollama":
+                body = {
+                    "model": self.model or "llama3",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                }
+                r = requests.post(f"{self.host}/api/chat", json=body, timeout=60)
+                r.raise_for_status()
+                msg = r.json().get("message", {}).get("content", "").strip()
+            elif self.provider in ("openai", "openai_compatible"):
+                base_url = SETTINGS.get("openai_base_url", "https://api.openai.com/v1") if self.provider == "openai" else self.host
+                url = f"{base_url}/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
+                body = {
+                    "model": self.model or "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                }
+                r = requests.post(url, json=body, headers=headers, timeout=60)
+                r.raise_for_status()
+                msg = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            elif self.provider == "anthropic":
+                url = "https://api.anthropic.com/v1/messages"
+                headers = {
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                }
+                body = {
+                    "model": self.model or "claude-3-5-sonnet-20241022",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                }
+                r = requests.post(url, json=body, headers=headers, timeout=60)
+                r.raise_for_status()
+                msg = r.json().get("content", [{}])[0].get("text", "").strip()
+            else:
+                raise ValueError(f"Unknown provider: {self.provider}")
+                
+            msg = msg.replace("`", "").replace('"', '').replace("'", "").strip()
+            if msg.lower().startswith("commit message:"):
+                msg = msg[15:].strip()
+            self.result.emit(msg)
+        except Exception as e:
+            self.error.emit(str(e))
 
 class GitPanel(QWidget):
     def __init__(self):
@@ -129,8 +201,15 @@ class GitPanel(QWidget):
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         lay.addWidget(self.file_list, 1)
         lay.addWidget(QLabel("Commit message:"))
+        
+        msg_row = QHBoxLayout()
         self.commit_msg = QLineEdit(); self.commit_msg.setPlaceholderText("feat: describe your change…")
-        lay.addWidget(self.commit_msg)
+        self.btn_gen_msg = QPushButton("✨ Auto-Gen Msg")
+        self.btn_gen_msg.clicked.connect(self.generate_commit_message)
+        msg_row.addWidget(self.commit_msg, 1)
+        msg_row.addWidget(self.btn_gen_msg)
+        lay.addLayout(msg_row)
+        
         btn_row = QHBoxLayout()
         btn_stage_all = QPushButton("➕ Stage All"); btn_stage_all.clicked.connect(self.stage_all)
         btn_commit = QPushButton("✔ Commit"); btn_commit.setObjectName("success"); btn_commit.clicked.connect(self.do_commit)
@@ -164,6 +243,7 @@ class GitPanel(QWidget):
         if not cwd: return
         try:
             r = subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
             callback((r.stdout + r.stderr).strip())
         except Exception as e:
@@ -281,6 +361,59 @@ class GitPanel(QWidget):
         if not msg: QMessageBox.warning(self,"No message","Enter a commit message."); return
         self._run_git(f'git commit -m "{msg}"')
     def do_push(self): self._run_git("git push")
+
+    def generate_commit_message(self):
+        cwd = self._cwd()
+        if not cwd:
+            QMessageBox.warning(self, "No Project", "Select a project first.")
+            return
+            
+        self.btn_gen_msg.setEnabled(False)
+        self.btn_gen_msg.setText("Generating...")
+        
+        # Check diff: staged first, then fallback to unstaged
+        def _on_diff_captured(diff_text):
+            if not diff_text.strip():
+                # Let's check unstaged diff
+                self._run_git_capture("git diff", _on_unstaged_diff_captured)
+            else:
+                self._request_ai_commit_message(diff_text)
+                
+        def _on_unstaged_diff_captured(diff_text):
+            if not diff_text.strip() or diff_text.startswith("[error]"):
+                QMessageBox.information(self, "No Changes", "No changes detected to generate a commit message for.")
+                self.btn_gen_msg.setEnabled(True)
+                self.btn_gen_msg.setText("✨ Auto-Gen Msg")
+            else:
+                self._request_ai_commit_message(diff_text)
+                
+        self._run_git_capture("git diff --cached", _on_diff_captured)
+
+    def _request_ai_commit_message(self, diff_text):
+        provider = SETTINGS.get("agent_provider", "ollama")
+        model = SETTINGS.get("default_model") or "llama3" if provider == "ollama" else SETTINGS.get("openai_model", "gpt-4o-mini")
+        host = SETTINGS.get("ollama_host", "http://localhost:11434")
+        api_key = ""
+        if provider == "openai":
+            api_key = SETTINGS.get("openai_api_key", "")
+        elif provider == "anthropic":
+            api_key = SETTINGS.get("anthropic_api_key", "")
+            
+        self._commit_worker = CommitMessageWorker(diff_text, provider, model, host, api_key)
+        self._commit_worker.result.connect(self._on_commit_msg_generated)
+        self._commit_worker.error.connect(self._on_commit_msg_error)
+        self._commit_worker.start()
+
+    def _on_commit_msg_generated(self, msg):
+        self.commit_msg.setText(msg)
+        self.btn_gen_msg.setEnabled(True)
+        self.btn_gen_msg.setText("✨ Auto-Gen Msg")
+        self.log.append_line(f"Generated commit message: '{msg}'", "success")
+
+    def _on_commit_msg_error(self, err):
+        QMessageBox.warning(self, "Generation Failed", f"Failed to generate commit message: {err}")
+        self.btn_gen_msg.setEnabled(True)
+        self.btn_gen_msg.setText("✨ Auto-Gen Msg")
 
     def _load_projects(self):
         try:
