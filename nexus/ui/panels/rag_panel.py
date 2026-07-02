@@ -28,6 +28,9 @@ class RAGIndexerWorker(QThread):
         self.model = model
         self.host = host
         self.api_key = api_key
+
+    def stop(self):
+        self.requestInterruption()
         
     def run(self):
         try:
@@ -59,6 +62,10 @@ class RAGQAWorker(QThread):
         self.host = host
         self.api_key = api_key
         self._stop = False
+
+    def stop(self):
+        self._stop = True
+        self.requestInterruption()
         
     def run(self):
         try:
